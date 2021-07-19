@@ -66,6 +66,7 @@
 
 #include "menu.h"
 #include "ultralcd.h"
+#include "conv2str.h"
 #include "backlight.h"
 
 #include "planner.h"
@@ -107,6 +108,8 @@
 #include "xflash.h"
 #include "optiboot_xflash.h"
 #endif //XFLASH
+
+#include "xflash_dump.h"
 
 #ifdef BLINKM
 #include "BlinkM.h"
@@ -454,10 +457,13 @@ static void print_time_remaining_init();
 static void wait_for_heater(long codenum, uint8_t extruder);
 static void gcode_G28(bool home_x_axis, bool home_y_axis, bool home_z_axis);
 static void gcode_M105(uint8_t extruder);
+
+#ifndef PINDA_THERMISTOR
 static void temp_compensation_start();
 static void temp_compensation_apply();
+#endif
 
-static bool get_PRUSA_SN(char* SN);
+static uint8_t get_PRUSA_SN(char* SN);
 
 uint16_t gcode_in_progress = 0;
 uint16_t mcode_in_progress = 0;
@@ -642,7 +648,7 @@ void crashdet_detected(uint8_t mask)
 		enquecommand_P(PSTR("CRASH_RECOVER"));
 	}else{
 		setTargetHotend(0, active_extruder);
-		bool yesno = lcd_show_fullscreen_message_yes_no_and_wait_P(_i("Crash detected. Resume print?"), false);
+		bool yesno = lcd_show_fullscreen_message_yes_no_and_wait_P(_i("Crash detected. Resume print?"), false);////MSG_CRASH_RESUME c=20 r=3
 		lcd_update_enable(true);
 		if (yesno)
 		{
@@ -741,9 +747,9 @@ static void factory_reset(char level)
 
 	case 2: // Level 2: Prepare for shipping
 		factory_reset_stats();
-		// [[fallthrough]] // there is no break intentionally
+		// FALLTHRU
 
-	case 4: // Level 4: Preparation after being serviced
+	case 3: // Level 3: Preparation after being serviced
 		// Force language selection at the next boot up.
 		lang_reset();
 		// Force the "Follow calibration flow" message at the next boot up.
@@ -758,7 +764,7 @@ static void factory_reset(char level)
 #endif //FILAMENT_SENSOR
 		break;
 
-	case 3:
+	case 4:
 		menu_progressbar_init(EEPROM_TOP, PSTR("ERASING all data"));
 		// Erase EEPROM
 		for (uint16_t i = 0; i < EEPROM_TOP; i++) {
@@ -866,14 +872,14 @@ static void check_if_fw_is_on_right_printer(){
   if((PRINTER_TYPE == PRINTER_MK3) || (PRINTER_TYPE == PRINTER_MK3S)){
     #ifdef IR_SENSOR
       if (pat9125_probe()){
-        lcd_show_fullscreen_message_and_wait_P(_i("MK3S firmware detected on MK3 printer"));}////c=20 r=3
+        lcd_show_fullscreen_message_and_wait_P(_i("MK3S firmware detected on MK3 printer"));}////MSG_MK3S_FIRMWARE_ON_MK3 c=20 r=4
     #endif //IR_SENSOR
 
     #ifdef PAT9125
       //will return 1 only if IR can detect filament in bondtech extruder so this may fail even when we have IR sensor
       const uint8_t ir_detected = !READ(IR_SENSOR_PIN);
       if (ir_detected){
-        lcd_show_fullscreen_message_and_wait_P(_i("MK3 firmware detected on MK3S printer"));}////c=20 r=3
+        lcd_show_fullscreen_message_and_wait_P(_i("MK3 firmware detected on MK3S printer"));}////MSG_MK3_FIRMWARE_ON_MK3S c=20 r=4
     #endif //PAT9125
   }
 #endif //FILAMENT_SENSOR
@@ -991,6 +997,58 @@ void list_sec_lang_from_external_flash()
 #endif //(LANG_MODE != 0)
 
 
+static void fw_crash_init()
+{
+#ifdef XFLASH_DUMP
+    dump_crash_reason crash_reason;
+    if(xfdump_check_state(&crash_reason))
+    {
+        // always signal to the host that a dump is available for retrieval
+        puts_P(_N("// action:dump_available"));
+
+#ifdef EMERGENCY_DUMP
+        if(crash_reason != dump_crash_reason::manual &&
+           eeprom_read_byte((uint8_t*)EEPROM_FW_CRASH_FLAG) != 0xFF)
+        {
+            lcd_show_fullscreen_message_and_wait_P(
+                    _i("FIRMWARE CRASH!\n"
+                       "Debug data available for analysis. "
+                       "Contact support to submit details."));
+        }
+#endif
+    }
+#else //XFLASH_DUMP
+    dump_crash_reason crash_reason = (dump_crash_reason)eeprom_read_byte((uint8_t*)EEPROM_FW_CRASH_FLAG);
+    if(crash_reason != dump_crash_reason::manual && (uint8_t)crash_reason != 0xFF)
+    {
+        lcd_beeper_quick_feedback();
+        lcd_clear();
+
+        lcd_puts_P(_i("FIRMWARE CRASH!\nCrash reason:\n"));
+        switch(crash_reason)
+        {
+        case dump_crash_reason::stack_error:
+            lcd_puts_P(_i("Static memory has\nbeen overwritten"));
+            break;
+        case dump_crash_reason::watchdog:
+            lcd_puts_P(_i("Watchdog timeout"));
+            break;
+        case dump_crash_reason::bad_isr:
+            lcd_puts_P(_i("Bad interrupt"));
+            break;
+        default:
+            lcd_print((uint8_t)crash_reason);
+            break;
+        }
+        lcd_wait_for_click();
+    }
+#endif //XFLASH_DUMP
+
+    // prevent crash prompts to reappear once acknowledged
+    eeprom_update_byte((uint8_t*)EEPROM_FW_CRASH_FLAG, 0xFF);
+}
+
+
 static void xflash_err_msg()
 {
 	lcd_clear();
@@ -1054,11 +1112,6 @@ void setup()
 		selectedSerialPort = 1;
 #endif //HAS_SECOND_SERIAL_PORT
 		MYSERIAL.begin(BAUDRATE);
-#ifdef TMC2130
-		//increased extruder current (PFW363)
-		tmc2130_current_h[E_AXIS] = 36;
-		tmc2130_current_r[E_AXIS] = 36;
-#endif //TMC2130
 #ifdef FILAMENT_SENSOR
 		//disabled filament autoload (PFW360)
 		fsensor_autoload_set(false);
@@ -1068,18 +1121,29 @@ void setup()
                eeprom_update_byte((unsigned char *)EEPROM_FAN_CHECK_ENABLED,true);
 	}
 
-    //saved EEPROM SN is not valid. Try to retrieve it.
-    //SN is valid only if it is NULL terminated. Any other character means either uninitialized or corrupted
-    if (eeprom_read_byte((uint8_t*)EEPROM_PRUSA_SN + 19))
+#ifdef TMC2130
+    if( FarmOrUserECool() ){
+		//increased extruder current (PFW363)
+		tmc2130_current_h[E_AXIS] = TMC2130_CURRENTS_FARM;
+		tmc2130_current_r[E_AXIS] = TMC2130_CURRENTS_FARM;
+    }
+#endif //TMC2130
+
+    //Check for valid SN in EEPROM. Try to retrieve it in case it's invalid.
+    //SN is valid only if it is NULL terminated and starts with "CZPX".
     {
         char SN[20];
-        if (get_PRUSA_SN(SN))
+        eeprom_read_block(SN, (uint8_t*)EEPROM_PRUSA_SN, 20);
+        if (SN[19] || strncmp_P(SN, PSTR("CZPX"), 4))
         {
-            eeprom_update_block(SN, (uint8_t*)EEPROM_PRUSA_SN, 20);
-            puts_P(PSTR("SN updated"));
+            if (!get_PRUSA_SN(SN))
+            {
+                eeprom_update_block(SN, (uint8_t*)EEPROM_PRUSA_SN, 20);
+                puts_P(PSTR("SN updated"));
+            }
+            else
+                puts_P(PSTR("SN update failed"));
         }
-        else
-            puts_P(PSTR("SN update failed"));
     }
 
 
@@ -1337,13 +1401,12 @@ void setup()
 #endif //TMC2130_VARIABLE_RESOLUTION
 
 #endif //TMC2130
-
 	st_init();    // Initialize stepper, this enables interrupts!
   
 #ifdef TMC2130
 	tmc2130_mode = silentMode?TMC2130_MODE_SILENT:TMC2130_MODE_NORMAL;
 	update_mode_profile();
-	tmc2130_init();
+	tmc2130_init(TMCInitParams(false, FarmOrUserECool() ));
 #endif //TMC2130
 #ifdef PSU_Delta
      init_force_z();                              // ! important for correct Z-axis initialization
@@ -1538,7 +1601,7 @@ void setup()
   }
 
   if (!previous_settings_retrieved) {
-	  lcd_show_fullscreen_message_and_wait_P(_i("Old settings found. Default PID, Esteps etc. will be set.")); //if EEPROM version or printer type was changed, inform user that default setting were loaded////MSG_DEFAULT_SETTINGS_LOADED c=20 r=5
+	  lcd_show_fullscreen_message_and_wait_P(_i("Old settings found. Default PID, Esteps etc. will be set.")); //if EEPROM version or printer type was changed, inform user that default setting were loaded////MSG_DEFAULT_SETTINGS_LOADED c=20 r=6
 	  Config_StoreSettings();
   }
   if (eeprom_read_byte((uint8_t*)EEPROM_WIZARD_ACTIVE) >= 1) {
@@ -1604,6 +1667,9 @@ void setup()
 	if (tmc2130_home_enabled == 0xff) tmc2130_home_enabled = 0;
 #endif //TMC2130
 
+    // report crash failures
+    fw_crash_init();
+
 #ifdef UVLO_SUPPORT
   if (eeprom_read_byte((uint8_t*)EEPROM_UVLO) != 0) { //previous print was terminated by UVLO
 /*
@@ -1649,7 +1715,42 @@ void setup()
   KEEPALIVE_STATE(NOT_BUSY);
 #ifdef WATCHDOG
   wdt_enable(WDTO_4S);
+#ifdef EMERGENCY_HANDLERS
+  WDTCSR |= (1 << WDIE);
+#endif //EMERGENCY_HANDLERS
 #endif //WATCHDOG
+}
+
+
+static inline void crash_and_burn(dump_crash_reason reason)
+{
+    WRITE(BEEPER, HIGH);
+    eeprom_update_byte((uint8_t*)EEPROM_FW_CRASH_FLAG, (uint8_t)reason);
+#ifdef EMERGENCY_DUMP
+    xfdump_full_dump_and_reset(reason);
+#elif defined(EMERGENCY_SERIAL_DUMP)
+    if(emergency_serial_dump)
+        serial_dump_and_reset(reason);
+#endif
+    softReset();
+}
+
+#ifdef EMERGENCY_HANDLERS
+#ifdef WATCHDOG
+ISR(WDT_vect)
+{
+    crash_and_burn(dump_crash_reason::watchdog);
+}
+#endif
+
+ISR(BADISR_vect)
+{
+    crash_and_burn(dump_crash_reason::bad_isr);
+}
+#endif //EMERGENCY_HANDLERS
+
+void stack_error() {
+    crash_and_burn(dump_crash_reason::stack_error);
 }
 
 
@@ -1725,6 +1826,32 @@ void serial_read_stream() {
     }
 }
 
+
+/**
+ * Output autoreport values according to features requested in M155
+ */
+#if defined(AUTO_REPORT)
+static void host_autoreport()
+{
+    if (autoReportFeatures.TimerExpired())
+    {
+        if(autoReportFeatures.Temp()){
+            gcode_M105(active_extruder);
+        }
+        if(autoReportFeatures.Pos()){
+            gcode_M114();
+        }
+#if defined(AUTO_REPORT) && (defined(FANCHECK) && (((defined(TACH_0) && (TACH_0 >-1)) || (defined(TACH_1) && (TACH_1 > -1)))))
+        if(autoReportFeatures.Fans()){
+            gcode_M123();
+        }
+#endif //AUTO_REPORT and (FANCHECK and TACH_0 or TACH_1)
+        autoReportFeatures.TimerStart();
+    }
+}
+#endif //AUTO_REPORT
+
+
 /**
 * Output a "busy" message at regular intervals
 * while the machine is not accepting commands.
@@ -1735,27 +1862,6 @@ void host_keepalive() {
 #endif //HOST_KEEPALIVE_FEATURE
   if (farm_mode) return;
   long ms = _millis();
-
-#if defined(AUTO_REPORT)
-  {
-    if (autoReportFeatures.TimerExpired())
-    {
-      if(autoReportFeatures.Temp()){
-        gcode_M105(active_extruder);
-      }
-      if(autoReportFeatures.Pos()){
-        gcode_M114();
-      }
- #if defined(AUTO_REPORT) && (defined(FANCHECK) && (((defined(TACH_0) && (TACH_0 >-1)) || (defined(TACH_1) && (TACH_1 > -1)))))      
-      if(autoReportFeatures.Fans()){
-        gcode_M123();
-      }
-#endif //AUTO_REPORT and (FANCHECK and TACH_0 or TACH_1)
-     autoReportFeatures.TimerStart();
-    }
-  }
-#endif //AUTO_REPORT
-
 
   if (host_keepalive_interval && busy_state != NOT_BUSY) {
     if ((ms - prev_busy_signal_ms) < (long)(1000L * host_keepalive_interval)) return;
@@ -2551,7 +2657,7 @@ void force_high_power_mode(bool start_high_power_section) {
 		cli();
 		tmc2130_mode = (start_high_power_section == true) ? TMC2130_MODE_NORMAL : TMC2130_MODE_SILENT;
 		update_mode_profile();
-		tmc2130_init();
+		tmc2130_init(TMCInitParams(FarmOrUserECool()));
     // We may have missed a stepper timer interrupt due to the time spent in the tmc2130_init() routine.
     // Be safe than sorry, reset the stepper timer before re-enabling interrupts.
     st_reset_timer();
@@ -3423,15 +3529,11 @@ bool gcode_M45(bool onlyZ, int8_t verbosity_level)
 		lcd_show_fullscreen_message_and_wait_P(_T(MSG_CONFIRM_NOZZLE_CLEAN));
 		if(onlyZ){
 			lcd_display_message_fullscreen_P(_T(MSG_MEASURE_BED_REFERENCE_HEIGHT_LINE1));
-			lcd_set_cursor(0, 3);
-			lcd_print(1);
-			lcd_puts_P(_T(MSG_MEASURE_BED_REFERENCE_HEIGHT_LINE2));
+			lcd_puts_at_P(0,3,_n("1/9"));
 		}else{
 			//lcd_show_fullscreen_message_and_wait_P(_T(MSG_PAPER));
 			lcd_display_message_fullscreen_P(_T(MSG_FIND_BED_OFFSET_AND_SKEW_LINE1));
-			lcd_set_cursor(0, 2);
-			lcd_print(1);
-			lcd_puts_P(_T(MSG_FIND_BED_OFFSET_AND_SKEW_LINE2));
+			lcd_puts_at_P(0,3,_n("1/4"));
 		}
 
 		refresh_cmd_timeout();
@@ -3451,9 +3553,7 @@ bool gcode_M45(bool onlyZ, int8_t verbosity_level)
 		    lcd_show_fullscreen_message_and_wait_P(_T(MSG_PAPER));
 			KEEPALIVE_STATE(IN_HANDLER);
 			lcd_display_message_fullscreen_P(_T(MSG_FIND_BED_OFFSET_AND_SKEW_LINE1));
-			lcd_set_cursor(0, 2);
-			lcd_print(1);
-			lcd_puts_P(_T(MSG_FIND_BED_OFFSET_AND_SKEW_LINE2));
+			lcd_puts_at_P(0,3,_n("1/4"));
 		}
 			
 		bool endstops_enabled  = enable_endstops(false);
@@ -3492,11 +3592,13 @@ bool gcode_M45(bool onlyZ, int8_t verbosity_level)
 				bool result = sample_mesh_and_store_reference();
 				if (result)
 				{
-					if (calibration_status() == CALIBRATION_STATUS_Z_CALIBRATION)
-						// Shipped, the nozzle height has been set already. The user can start printing now.
-						calibration_status_store(CALIBRATION_STATUS_CALIBRATED);
-						final_result = true;
-					// babystep_apply();
+                    if (calibration_status() == CALIBRATION_STATUS_Z_CALIBRATION)
+                    {
+                        // Shipped, the nozzle height has been set already. The user can start printing now.
+                        calibration_status_store(CALIBRATION_STATUS_CALIBRATED);
+                    }
+                    final_result = true;
+                    // babystep_apply();
 				}
 			}
 			else
@@ -3687,7 +3789,7 @@ static void gcode_M600(bool automatic, float x_position, float y_position, float
 			current_position[X_AXIS] -= 100;
 			plan_buffer_line_curposXYZE(FILAMENTCHANGE_XYFEED);
 			st_synchronize();
-			lcd_show_fullscreen_message_and_wait_P(_i("Please open idler and remove filament manually."));////MSG_CHECK_IDLER c=20 r=4
+			lcd_show_fullscreen_message_and_wait_P(_i("Please open idler and remove filament manually."));////MSG_CHECK_IDLER c=20 r=5
         }
     }
 
@@ -3822,33 +3924,47 @@ void gcode_M701()
  *
  * Send command ;S to serial port 0 to retrieve serial number stored in 32U2 processor,
  * reply is stored in *SN.
- * Operation takes typically 23 ms. If the retransmit is not finished until 100 ms,
- * it is interrupted, so less, or no characters are retransmitted, the function returns false
+ * Operation takes typically 23 ms. If no valid SN can be retrieved within the 250ms window, the function aborts 
+ * and returns a general failure flag.
  * The command will fail if the 32U2 processor is unpowered via USB since it is isolated from the rest of the electronics.
  * In that case the value that is stored in the EEPROM should be used instead.
  *
- * @return 1 on success
- * @return 0 on general failure
+ * @return 0 on success
+ * @return 1 on general failure
  */
-static bool get_PRUSA_SN(char* SN)
+static uint8_t get_PRUSA_SN(char* SN)
 {
     uint8_t selectedSerialPort_bak = selectedSerialPort;
-    selectedSerialPort = 0;
-    SERIAL_ECHOLNRPGM(PSTR(";S"));
-    uint8_t numbersRead = 0;
+    uint8_t rxIndex;
+    bool SN_valid = false;
     ShortTimer timeout;
-    timeout.start();
 
-    while (numbersRead < 19) {
-        if (MSerial.available() > 0) {
-            SN[numbersRead] = MSerial.read();
-            numbersRead++;
+    selectedSerialPort = 0;
+    timeout.start();
+    
+    while (!SN_valid)
+    {
+        rxIndex = 0;
+        _delay(50);
+        MYSERIAL.flush(); //clear RX buffer
+        SERIAL_ECHOLNRPGM(PSTR(";S"));
+        while (rxIndex < 19)
+        {
+            if (timeout.expired(250u))
+                goto exit;
+            if (MYSERIAL.available() > 0)
+            {
+                SN[rxIndex] = MYSERIAL.read();
+                rxIndex++;
+            }
         }
-        if (timeout.expired(100u)) break;
+        SN[rxIndex] = 0;
+        // printf_P(PSTR("SN:%s\n"), SN);
+        SN_valid = (strncmp_P(SN, PSTR("CZPX"), 4) == 0);
     }
-    SN[numbersRead] = 0;
+exit:
     selectedSerialPort = selectedSerialPort_bak;
-    return (numbersRead == 19);
+    return !SN_valid;
 }
 //! Detection of faulty RAMBo 1.1b boards equipped with bigger capacitors
 //! at the TACH_1 pin, which causes bad detection of print fan speed.
@@ -3960,7 +4076,6 @@ static void extended_capabilities_report()
     cap_line(PSTR("AUTOREPORT_POSITION"), ENABLED(AUTO_REPORT));
     // EXTENDED_M20 (support for L and T parameters)
     cap_line(PSTR("EXTENDED_M20"), 1);
-    //@todo Update RepRap cap
 }
 #endif //EXTENDED_CAPABILITIES_REPORT
 
@@ -4222,12 +4337,19 @@ void process_commands()
         if (!hasP && !hasS && *src != '\0') {
             lcd_setstatus(src);
         } else {
-            LCD_MESSAGERPGM(_i("Wait for user..."));////MSG_USERWAIT
+            // farmers want to abuse a bug from the previous firmware releases
+            // - they need to see the filename on the status screen instead of "Wait for user..."
+            // So we won't update the message in farm mode...
+            if( ! farm_mode){ 
+                LCD_MESSAGERPGM(_i("Wait for user..."));////MSG_USERWAIT c=20
+            } else {
+                custom_message_type = CustomMsg::Status; // let the lcd display the name of the printed G-code file in farm mode
+            }
         }
-        lcd_ignore_click();				//call lcd_ignore_click aslo for else ???
+        lcd_ignore_click();				//call lcd_ignore_click also for else ???
         st_synchronize();
         previous_millis_cmd = _millis();
-        if (codenum > 0) {
+        if (codenum > 0 ) {
             codenum += _millis();  // keep track of when we started waiting
             KEEPALIVE_STATE(PAUSED_FOR_USER);
             while(_millis() < codenum && !lcd_clicked()) {
@@ -5721,7 +5843,7 @@ if(eSoundMode!=e_SOUND_MODE_SILENT)
     */
 
     case 17:
-        LCD_MESSAGERPGM(_i("No move."));////MSG_NO_MOVE
+        LCD_MESSAGERPGM(_i("No move."));////MSG_NO_MOVE c=20
         enable_x();
         enable_y();
         enable_z();
@@ -5773,7 +5895,7 @@ if(eSoundMode!=e_SOUND_MODE_SILENT)
       starpos = (strchr(strchr_pointer + 4,'*'));
 	  if(starpos!=NULL)
         *(starpos)='\0';
-      card.openFileReadFilteredGcode(strchr_pointer + 4);
+      card.openFileReadFilteredGcode(strchr_pointer + 4, true);
       break;
 
     /*!
@@ -6392,7 +6514,6 @@ Sigma_Exit:
         - `C` - Time to change/pause/user interaction in normal mode
         - `D` - Time to change/pause/user interaction in silent mode
     */
-    //!@todo update RepRap Gcode wiki
     case 73: //M73 show percent done, time remaining and time to change/pause
     {
         if(code_seen('P')) print_percent_done_normal = code_value();
@@ -6485,6 +6606,7 @@ Sigma_Exit:
       gcode_M105(extruder);
       
       cmdqueue_pop_front(); //prevent an ok after the command since this command uses an ok at the beginning.
+      cmdbuffer_front_already_processed = true;
       
       break;
     }
@@ -6510,8 +6632,6 @@ Sigma_Exit:
           bit 6 = free
           bit 7 = free
      */
-    //!@todo update RepRap Gcode wiki
-    //!@todo Should be temperature always? Octoprint doesn't switch to M105 if M155 timer is set
     case 155:
     {
         if (code_seen('S')){
@@ -7064,7 +7184,7 @@ Sigma_Exit:
 
 #if (defined(FANCHECK) && (((defined(TACH_0) && (TACH_0 >-1)) || (defined(TACH_1) && (TACH_1 > -1)))))
     /*!
-	### M123 - Tachometer value <a href="https://www.reprap.org/wiki/G-code#M123:_Tachometer_value_.28RepRap.29">M123: Tachometer value</a>
+	### M123 - Tachometer value <a href="https://www.reprap.org/wiki/G-code#M123:_Tachometer_value_.28RepRap_.26_Prusa.29">M123: Tachometer value</a>
   This command is used to report fan speeds and fan pwm values.
   #### Usage
     
@@ -7080,7 +7200,6 @@ Sigma_Exit:
     E0:3240 RPM PRN1:4560 RPM E0@:255 PRN1@:255
 
     */
-   //!@todo Update RepRap Gcode wiki
     case 123:
     gcode_M123();
     break;
@@ -8420,6 +8539,7 @@ Sigma_Exit:
     /*!
 	### M907 - Set digital trimpot motor current in mA using axis codes <a href="https://reprap.org/wiki/G-code#M907:_Set_digital_trimpot_motor">M907: Set digital trimpot motor</a>
 	Set digital trimpot motor current using axis codes (X, Y, Z, E, B, S).
+    M907 has no effect when the experimental Extruder motor current scaling mode is active (that applies to farm printing as well)
 	#### Usage
     
         M907 [ X | Y | Z | E | B | S ]
@@ -8436,16 +8556,20 @@ Sigma_Exit:
     {
 #ifdef TMC2130
         // See tmc2130_cur2val() for translation to 0 .. 63 range
-        for (int i = 0; i < NUM_AXIS; i++)
-			if(code_seen(axis_codes[i]))
-			{
-				long cur_mA = code_value_long();
-				uint8_t val = tmc2130_cur2val(cur_mA);
-				tmc2130_set_current_h(i, val);
-				tmc2130_set_current_r(i, val);
-				//if (i == E_AXIS) printf_P(PSTR("E-axis current=%ldmA\n"), cur_mA);
-			}
-
+        for (uint_least8_t i = 0; i < NUM_AXIS; i++){
+            if(code_seen(axis_codes[i])){
+                if( i == E_AXIS && FarmOrUserECool() ){
+                    SERIAL_ECHORPGM(eMotorCurrentScalingEnabled);
+                    SERIAL_ECHOLNPGM(", M907 E ignored");
+                    continue;
+                }
+                long cur_mA = code_value_long();
+                uint8_t val = tmc2130_cur2val(cur_mA);
+                tmc2130_set_current_h(i, val);
+                tmc2130_set_current_r(i, val);
+                //if (i == E_AXIS) printf_P(PSTR("E-axis current=%ldmA\n"), cur_mA);
+            }
+        }
 #else //TMC2130
       #if defined(DIGIPOTSS_PIN) && DIGIPOTSS_PIN > -1
         for(int i=0;i<NUM_AXIS;i++) if(code_seen(axis_codes[i])) st_current_set(i,code_value());
@@ -8670,7 +8794,7 @@ Sigma_Exit:
     case 350: 
     {
 	#ifdef TMC2130
-		for (int i=0; i<NUM_AXIS; i++) 
+		for (uint_least8_t i=0; i<NUM_AXIS; i++) 
 		{
 			if(code_seen(axis_codes[i]))
 			{
@@ -8832,7 +8956,7 @@ Sigma_Exit:
       bool load_to_nozzle = false;
       for (index = 1; *(strchr_pointer + index) == ' ' || *(strchr_pointer + index) == '\t'; index++);
 
-	  *(strchr_pointer + index) = tolower(*(strchr_pointer + index));
+      *(strchr_pointer + index) = tolower(*(strchr_pointer + index));
 
       if ((*(strchr_pointer + index) < '0' || *(strchr_pointer + index) > '4') && *(strchr_pointer + index) != '?' && *(strchr_pointer + index) != 'x' && *(strchr_pointer + index) != 'c') {
           SERIAL_ECHOLNPGM("Invalid T code.");
@@ -9044,7 +9168,9 @@ Sigma_Exit:
     */
 	case 1:
 		dcode_1(); break;
+#endif
 
+#if defined DEBUG_DCODE2 || defined DEBUG_DCODES
     /*!
     ### D2 - Read/Write RAM <a href="https://reprap.org/wiki/G-code#D2:_Read.2FWrite_RAM">D3: Read/Write RAM</a>
     This command can be used without any additional parameters. It will read the entire RAM.
@@ -9131,7 +9257,7 @@ Sigma_Exit:
 	case 5:
 		dcode_5(); break;
 #endif //DEBUG_DCODE5
-#ifdef DEBUG_DCODES
+#if defined DEBUG_DCODE6 || defined DEBUG_DCODES
 
     /*!
     ### D6 - Read/Write external FLASH <a href="https://reprap.org/wiki/G-code#D6:_Read.2FWrite_external_FLASH">D6: Read/Write external Flash</a>
@@ -9139,6 +9265,8 @@ Sigma_Exit:
     */
 	case 6:
 		dcode_6(); break;
+#endif
+#ifdef DEBUG_DCODES
 
     /*!
     ### D7 - Read/Write Bootloader <a href="https://reprap.org/wiki/G-code#D7:_Read.2FWrite_Bootloader">D7: Read/Write Bootloader</a>
@@ -9192,8 +9320,74 @@ Sigma_Exit:
     ### D12 - Time <a href="https://reprap.org/wiki/G-code#D12:_Time">D12: Time</a>
     Writes the current time in the log file.
     */
-
 #endif //DEBUG_DCODES
+
+#ifdef XFLASH_DUMP
+    /*!
+    ### D20 - Generate an offline crash dump
+    Generate a crash dump for later retrival.
+    #### Usage
+
+     D20 [E]
+
+    ### Parameters
+    - `E` - Perform an emergency crash dump (resets the printer).
+    ### Notes
+    - A crash dump can be later recovered with D21, or cleared with D22.
+    - An emergency crash dump includes register data, but will cause the printer to reset after the dump
+      is completed.
+    */
+    case 20: {
+        dcode_20();
+        break;
+    };
+
+    /*!
+    ### D21 - Print crash dump to serial
+    Output the complete crash dump (if present) to the serial.
+    #### Usage
+
+     D21
+
+    ### Notes
+    - The starting address can vary between builds, but it's always at the beginning of the data section.
+    */
+    case 21: {
+        dcode_21();
+        break;
+    };
+
+    /*!
+    ### D22 - Clear crash dump state
+    Clear an existing internal crash dump.
+    #### Usage
+
+     D22
+    */
+    case 22: {
+        dcode_22();
+        break;
+    };
+#endif //XFLASH_DUMP
+
+#ifdef EMERGENCY_SERIAL_DUMP
+    /*!
+    ### D23 - Request emergency dump on serial
+    On boards without offline dump support, request online dumps to the serial port on firmware faults.
+    When online dumps are enabled, the FW will dump memory on the serial before resetting.
+    #### Usage
+
+     D23 [E] [R]
+    #### Parameters
+    - `E` - Perform an emergency crash dump (resets the printer).
+    - `R` - Disable online dumps.
+    */
+    case 23: {
+        dcode_23();
+        break;
+    };
+#endif
+
 #ifdef HEATBED_ANALYSIS
 
     /*!
@@ -9671,7 +9865,7 @@ static void handleSafetyTimer()
     {
         setTargetBed(0);
         setAllTargetHotends(0);
-        lcd_show_fullscreen_message_and_wait_P(_i("Heating disabled by safety timer."));////MSG_BED_HEATING_SAFETY_DISABLED
+        lcd_show_fullscreen_message_and_wait_P(_i("Heating disabled by safety timer."));////MSG_BED_HEATING_SAFETY_DISABLED c=20 r=4
     }
 }
 #endif //SAFETYTIMER
@@ -9750,7 +9944,7 @@ static uint16_t nFSCheckCount=0;
 				if( minVolt >= IRsensor_Ldiode_TRESHOLD && minVolt <= IRsensor_Lmax_TRESHOLD 
 				 && maxVolt >= IRsensor_Hmin_TRESHOLD && maxVolt <= IRsensor_Hopen_TRESHOLD
 				){
-					manage_inactivity_IR_ANALOG_Check(nFSCheckCount, ClFsensorPCB::_Old, ClFsensorPCB::_Rev04, _i("FS v0.4 or newer") ); ////c=18
+					manage_inactivity_IR_ANALOG_Check(nFSCheckCount, ClFsensorPCB::_Old, ClFsensorPCB::_Rev04, _i("FS v0.4 or newer") ); ////MSG_FS_V_04_OR_NEWER c=18
 				} 
 				//! If and only if minVolt is in range <0.0, 0.3> and maxVolt is in range  <4.6, 5.0V>, I'm considering a situation with the old fsensor
 				//! Note, we are not relying on one voltage here - getting just +5V can mean an old fsensor or a broken new sensor - that's why
@@ -9758,7 +9952,7 @@ static uint16_t nFSCheckCount=0;
 				else if( minVolt < IRsensor_Ldiode_TRESHOLD 
 				 && maxVolt > IRsensor_Hopen_TRESHOLD && maxVolt <= IRsensor_VMax_TRESHOLD
 				){
-					manage_inactivity_IR_ANALOG_Check(nFSCheckCount, ClFsensorPCB::_Rev04, oFsensorPCB=ClFsensorPCB::_Old, _i("FS v0.3 or older")); ////c=18
+					manage_inactivity_IR_ANALOG_Check(nFSCheckCount, ClFsensorPCB::_Rev04, oFsensorPCB=ClFsensorPCB::_Old, _i("FS v0.3 or older")); ////MSG_FS_V_03_OR_OLDER c=18
 				}
 #endif // IR_SENSOR_ANALOG
 				if (fsensor_check_autoload())
@@ -9892,6 +10086,22 @@ if(0)
   #endif
   check_axes_activity();
   mmu_loop();
+
+  // handle longpress
+  if(lcd_longpress_trigger)
+  {
+      // long press is not possible in modal mode, wait until ready
+      if (lcd_longpress_func && lcd_update_enabled)
+      {
+          lcd_longpress_func();
+          lcd_longpress_trigger = 0;
+      }
+  }
+
+#if defined(AUTO_REPORT)
+  host_autoreport();
+#endif //AUTO_REPORT
+  host_keepalive();
 }
 
 void kill(const char *full_screen_message, unsigned char id)
@@ -11136,7 +11346,7 @@ void recover_print(uint8_t automatic) {
 	char cmd[30];
 	lcd_update_enable(true);
 	lcd_update(2);
-  lcd_setstatuspgm(_i("Recovering print    "));////MSG_RECOVERING_PRINT c=20
+  lcd_setstatuspgm(_i("Recovering print"));////MSG_RECOVERING_PRINT c=20
 
   // Recover position, temperatures and extrude_multipliers
   bool mbl_was_active = recover_machine_state_after_power_panic();
@@ -11956,7 +12166,7 @@ void disable_force_z()
 #ifdef TMC2130
     tmc2130_mode=TMC2130_MODE_SILENT;
     update_mode_profile();
-    tmc2130_init(true);
+    tmc2130_init(TMCInitParams(true, FarmOrUserECool()));
 #endif // TMC2130
 }
 
@@ -11970,7 +12180,7 @@ bEnableForce_z=true;
 #ifdef TMC2130
 tmc2130_mode=eeprom_read_byte((uint8_t*)EEPROM_SILENT)?TMC2130_MODE_SILENT:TMC2130_MODE_NORMAL;
 update_mode_profile();
-tmc2130_init(true);
+tmc2130_init(TMCInitParams(true, FarmOrUserECool()));
 #endif // TMC2130
 
 WRITE(Z_ENABLE_PIN,Z_ENABLE_ON);                  // slightly redundant ;-p
