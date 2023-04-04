@@ -132,7 +132,7 @@
 #define WATCHDOG
 
 // Power panic
-#define UVLO_SUPPORT
+//#define UVLO_SUPPORT
 
 // Fan check
 #define FANCHECK
