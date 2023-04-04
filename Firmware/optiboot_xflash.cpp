@@ -8,6 +8,7 @@
 #include "stk500.h"
 #include "bootapp.h"
 #include <avr/wdt.h>
+#include "lcd.h"
 
 #define OPTIBOOT_MAJVER 6
 #define OPTIBOOT_CUSTOMVER 0
@@ -54,9 +55,7 @@ static void putch(char ch) {
 static void verifySpace() {
   if (getch() != CRC_EOP) {
     putch(STK_FAILED);
-    wdt_enable(WDTO_15MS); // shorten WD timeout
-    while (1)           // and busy-loop so that WD causes
-      ;             //  a reset and app start.
+    softReset();
   }
   putch(STK_INSYNC);
 }
@@ -158,6 +157,9 @@ uint8_t optiboot_xflash_enter()
   spi_init();
   xflash_init();
   wdt_disable();
+
+  lcd_clear();
+  lcd_puts_at_P(0, 1, PSTR(" Upgrading xflash\n Do not disconnect!"));
 
   /* Forever loop: exits by causing WDT reset */
   for (;;) {
@@ -296,7 +298,7 @@ uint8_t optiboot_xflash_enter()
     }
     else if (ch == STK_LEAVE_PROGMODE) { /* 'Q' */
       // Adaboot no-wait mod
-      wdt_enable(WDTO_15MS);
+      wdt_enable(WATCHDOG_SOFT_RESET_VALUE);
       verifySpace();
     }
     else {

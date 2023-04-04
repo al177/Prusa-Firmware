@@ -1,6 +1,7 @@
 //language.c
 #include "language.h"
 #include <avr/pgmspace.h>
+#include <avr/io.h>
 #include <avr/eeprom.h>
 #include "bootapp.h"
 
@@ -28,7 +29,7 @@ uint8_t lang_is_selected(void) { return 1; }
 #else //(LANG_MODE == 0) //secondary languages in progmem or xflash
 
 //reserved xx kbytes for secondary language table
-const char __attribute__((aligned(256))) _SEC_LANG[LANG_SIZE_RESERVED] PROGMEM_I2 = "_SEC_LANG";
+const char _SEC_LANG[LANG_SIZE_RESERVED] __attribute__((aligned(SPM_PAGESIZE))) PROGMEM_I2 = "_SEC_LANG";
 
 //primary language signature
 const uint32_t _PRI_LANG_SIGNATURE[1] __attribute__((section(".progmem0"))) = {0xffffffff};
@@ -239,9 +240,9 @@ const char* lang_get_name_by_code(uint16_t code)
 #ifdef COMMUNITY_LANG_GROUP1_HR
 	case LANG_CODE_HR: return _n("Hrvatski"); //community Croatian contribution
 #endif // COMMUNITY_LANG_GROUP1_HR
-#ifdef COMMUNITY_LANG_GROUP1_LT
+#ifdef COMMUNITY_LANG_GROUP2_LT
 	case LANG_CODE_LT: return _n("Lietuviu"); //community Lithuanian contribution
-#endif // COMMUNITY_LANG_GROUP1_LT
+#endif // COMMUNITY_LANG_GROUP2_LT
 #ifdef COMMUNITY_LANG_GROUP1_RO
 	case LANG_CODE_RO: return _n("Romana"); //community Romanian contribution
 #endif // COMMUNITY_LANG_GROUP1_RO
