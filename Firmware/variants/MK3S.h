@@ -40,7 +40,7 @@
  *------------------------------------*/
 
 // Steps per unit {X,Y,Z,E}
-#define DEFAULT_AXIS_STEPS_PER_UNIT   {100,100,3200/8,280}
+#define DEFAULT_AXIS_STEPS_PER_UNIT   {100,100,3200/8,284}
 
 // Endstop inverting
 #define X_MIN_ENDSTOP_INVERTING 0 // set to 1 to invert the logic of the endstop.
@@ -126,7 +126,7 @@
 #define WATCHDOG
 
 // Power panic
-#define UVLO_SUPPORT
+//#define UVLO_SUPPORT
 
 // Fan check
 #define FANCHECK
@@ -277,10 +277,13 @@
 #define TMC2130_SG_THRS_HOME {3, 3, TMC2130_SG_THRS_Z, TMC2130_SG_THRS_E}
 
 //new settings is possible for vsense = 1, running current value > 31 set vsense to zero and shift both currents by 1 bit right (Z axis only)
-#define TMC2130_CURRENTS_H {16, 20, 35, 30}  // default holding currents for all axes
+#define TMC2130_CURRENTS_H {26, 29, 37, 30}  // default holding currents for all axes
+#define TMC2130_CURRENTS_R {26, 29, 37, 38}  // default running currents for all axes
 #define TMC2130_CURRENTS_FARM 36             // E 805 mA peak for ECool/farm mode
-#define TMC2130_CURRENTS_R {16, 20, 35, 30}  // default running currents for all axes
-#define TMC2130_CURRENTS_R_HOME {8, 10, 20, 18}  // homing running currents for all axes
+//#define TMC2130_CURRENTS_H {16, 20, 35, 30}  // default holding currents for all axes
+//#define TMC2130_CURRENTS_R {16, 20, 35, 30}  // default running currents for all axes
+//#define TMC2130_CURRENTS_R_HOME {12, 16, 20, 18}  // homing running currents for all axes
+#define TMC2130_CURRENTS_R_HOME {16, 20, 20, 18}  // homing running currents for all axes
 
 #define TMC2130_STEALTH_Z
 #define TMC2130_DEDGE_STEPPING
